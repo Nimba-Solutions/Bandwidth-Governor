@@ -4,3 +4,4 @@ out/
 *.exe
 .DS_Store
 Thumbs.db
+coverage/

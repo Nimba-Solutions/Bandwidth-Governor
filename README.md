@@ -1,6 +1,8 @@
 # Bandwidth Governor
 
-A free Windows desktop app that rate-limits upload and download bandwidth per-app or globally using Windows QoS policies. Built with Electron.
+**Free & open-source Windows app to keep your internet stable while running Claude Code.**
+
+Built by someone who ran Claude Code so hard and so regularly that his internet started having issues. Bandwidth Governor uses Windows QoS policies to rate-limit upload/download bandwidth per-app or globally — so Claude can keep coding while your Zoom calls, streaming, and browsing stay smooth.
 
 ## Features
 
@@ -48,4 +50,4 @@ Bandwidth Governor creates Windows QoS (Quality of Service) policies via `New-Ne
 
 [BSL 1.1](LICENSE.md) — Converts to Apache 2.0 after four years per release.
 
-**Author:** [Cloud Nimbus LLC](https://cloudnimbus.com)
+**Author:** [Cloud Nimbus LLC](https://cloudnimbusllc.com)
