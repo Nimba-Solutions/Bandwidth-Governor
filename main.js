@@ -23,6 +23,7 @@ const store = new Store({
     enabled: true,  // master on/off
     launchers: [],  // { id, name, folder, claudeArgs }
     prompts: [],    // { id, text, priority, status, createdAt, tags }
+    claudeConfig: null, // { speed: {download, upload}, percent, limitMbps, testedAt }
   },
 });
 
@@ -458,11 +459,17 @@ ipcMain.handle('run-speed-test', async () => {
 
 // --- Configure for Claude ---
 
-ipcMain.handle('configure-claude', async (_, { uploadCapPercent }) => {
-  // Step 1: Run speed test
-  const speed = await runSpeedTest();
-  if (speed.upload <= 0) {
-    return { status: 'error', message: 'Speed test failed - could not measure upload speed', speed };
+ipcMain.handle('configure-claude', async (_, { uploadCapPercent, forceSpeedTest }) => {
+  // Step 1: Use saved speed or run test
+  let speed;
+  const savedConfig = store.get('claudeConfig');
+  if (!forceSpeedTest && savedConfig && savedConfig.speed && savedConfig.speed.upload > 0) {
+    speed = savedConfig.speed;
+  } else {
+    speed = await runSpeedTest();
+    if (speed.upload <= 0) {
+      return { status: 'error', message: 'Speed test failed - could not measure upload speed', speed };
+    }
   }
 
   // Step 2: Calculate limit
@@ -471,8 +478,8 @@ ipcMain.handle('configure-claude', async (_, { uploadCapPercent }) => {
 
   // Step 3: Remove existing Claude policies
   const claudeApps = ['node.exe', 'claude.exe', 'git.exe', 'git-remote-https.exe', 'ssh.exe', 'scp.exe'];
-  for (const app of claudeApps) {
-    try { await removePolicy(`Claude_${app.replace('.exe', '')}`); } catch (e) {}
+  for (const a of claudeApps) {
+    try { await removePolicy(`Claude_${a.replace('.exe', '')}`); } catch (e) {}
   }
 
   // Step 4: Apply per-app limits to all Claude-related processes
@@ -491,13 +498,73 @@ ipcMain.handle('configure-claude', async (_, { uploadCapPercent }) => {
   store.set('enabled', true);
   updateTrayMenu();
 
+  // Save config for next time
+  const claudeConfig = { speed, percent, limitMbps, testedAt: new Date().toISOString() };
+  store.set('claudeConfig', claudeConfig);
+
   return {
     status: 'ok',
     speed,
     percent,
     limitMbps,
     results,
+    usedSavedSpeed: !forceSpeedTest && savedConfig && savedConfig.speed && savedConfig.speed.upload > 0,
   };
+});
+
+ipcMain.handle('get-claude-config', () => store.get('claudeConfig'));
+
+ipcMain.handle('quick-setup', async (_, { uploadCapPercent }) => {
+  let speed;
+  const savedConfig = store.get('claudeConfig');
+  if (savedConfig && savedConfig.speed && savedConfig.speed.upload > 0) {
+    speed = savedConfig.speed;
+  } else {
+    speed = await runSpeedTest();
+    if (speed.upload <= 0) {
+      return { status: 'error', message: 'Speed test failed', speed };
+    }
+  }
+
+  const percent = uploadCapPercent || 50;
+  const limitMbps = Math.max(0.5, Math.round(speed.upload * (percent / 100) * 10) / 10);
+
+  const claudeApps = ['node.exe', 'claude.exe', 'git.exe', 'git-remote-https.exe', 'ssh.exe', 'scp.exe'];
+  for (const a of claudeApps) {
+    try { await removePolicy(`Claude_${a.replace('.exe', '')}`); } catch (e) {}
+  }
+  for (const appName of claudeApps) {
+    await createPolicy({
+      name: `Claude_${appName.replace('.exe', '')}`,
+      appPath: appName,
+      uploadLimitMbps: limitMbps,
+      downloadLimitMbps: 0,
+    });
+  }
+
+  isEnabled = true;
+  store.set('enabled', true);
+  updateTrayMenu();
+
+  // Save claude config
+  store.set('claudeConfig', { speed, percent, limitMbps, testedAt: new Date().toISOString() });
+
+  // Enable auto-start
+  await setAutoStart(true);
+
+  // Set start-minimized
+  const settings = store.get('settings');
+  settings.autoStart = true;
+  settings.startMinimized = true;
+  settings.autoApplyOnLaunch = true;
+  store.set('settings', settings);
+
+  // Minimize to tray
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.hide();
+  }
+
+  return { status: 'ok', speed, percent, limitMbps };
 });
 
 // --- Claude Launchers ---
@@ -634,24 +701,55 @@ ipcMain.handle('self-elevate', async () => {
   }
 });
 
+// --- Single instance lock ---
+
+const gotLock = app.requestSingleInstanceLock();
+
+if (!gotLock) {
+  // Another instance is already running — show a dialog and quit
+  app.whenReady().then(() => {
+    const { dialog } = require('electron');
+    dialog.showMessageBoxSync({
+      type: 'warning',
+      title: 'Bandwidth Governor',
+      message: 'Bandwidth Governor is already running!',
+      detail: 'Another instance is active in the system tray. Running multiple instances causes QoS policy conflicts.\n\nClick OK to close this duplicate.',
+      buttons: ['OK'],
+    });
+    app.quit();
+  });
+} else {
+  // When a second instance tries to launch, focus the existing window
+  app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    } else {
+      createWindow();
+    }
+  });
+}
+
 // --- App lifecycle ---
 
-app.whenReady().then(async () => {
-  createTray();
+if (gotLock) {
+  app.whenReady().then(async () => {
+    createTray();
 
-  const settings = store.get('settings');
+    const settings = store.get('settings');
 
-  // Auto-apply policies on launch
-  if (isEnabled && settings.autoApplyOnLaunch) {
-    await reapplyPolicies();
-  }
+    // Auto-apply policies on launch
+    if (isEnabled && settings.autoApplyOnLaunch) {
+      await reapplyPolicies();
+    }
 
-  // Show window unless start-minimized is on
-  if (!settings.startMinimized) {
-    createWindow();
-  }
-});
+    // Show window unless start-minimized is on
+    if (!settings.startMinimized) {
+      createWindow();
+    }
+  });
+}
 
 app.on('window-all-closed', () => { /* keep running in tray */ });
-app.on('activate', () => createWindow());
+app.on('activate', () => { if (gotLock) createWindow(); });
 app.on('before-quit', () => { app.isQuitting = true; });

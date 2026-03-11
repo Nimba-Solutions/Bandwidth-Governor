@@ -23,7 +23,9 @@ contextBridge.exposeInMainWorld('api', {
   quickLimitApp: (appName, uploadMbps) => ipcRenderer.invoke('quick-limit-app', { appName, uploadMbps }),
   selfElevate: () => ipcRenderer.invoke('self-elevate'),
   runSpeedTest: () => ipcRenderer.invoke('run-speed-test'),
-  configureClaude: (uploadCapPercent) => ipcRenderer.invoke('configure-claude', { uploadCapPercent }),
+  configureClaude: (uploadCapPercent, forceSpeedTest) => ipcRenderer.invoke('configure-claude', { uploadCapPercent, forceSpeedTest }),
+  getClaudeConfig: () => ipcRenderer.invoke('get-claude-config'),
+  quickSetup: (uploadCapPercent) => ipcRenderer.invoke('quick-setup', { uploadCapPercent }),
   onEnabledChanged: (cb) => ipcRenderer.on('enabled-changed', (_, val) => cb(val)),
 
   // Launchers
