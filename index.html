@@ -445,6 +445,91 @@
       margin-top: -2px;
     }
 
+    /* Session status colors */
+    .launcher-card.session-active { border-color: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.3); }
+    .launcher-card.session-idle { border-color: #eab308; box-shadow: 0 0 8px rgba(234,179,8,0.3); }
+
+    .session-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+    .session-badge.active { background: #166534; color: #4ade80; }
+    .session-badge.idle { background: #713f12; color: #facc15; }
+    .session-badge.stopped { background: #333; color: #888; }
+
+    .lc-color-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+
+    .priority-stars {
+      font-size: 10px;
+      color: #555;
+      letter-spacing: 1px;
+    }
+    .priority-stars .filled { color: #eab308; }
+
+    .session-panel {
+      background: #0f1629;
+      border: 1px solid #2a3a5a;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+    }
+    .session-panel h3 {
+      font-size: 13px;
+      color: #888;
+      margin-bottom: 8px;
+    }
+    .session-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 8px;
+      border-radius: 6px;
+      margin-bottom: 4px;
+      background: #1a1a2e;
+      font-size: 12px;
+    }
+    .session-item:hover { background: #1e2240; }
+
+    /* Notification toast for idle */
+    .idle-toast {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #1a1a2e;
+      border: 1px solid #eab308;
+      border-radius: 10px;
+      padding: 14px 18px;
+      z-index: 9999;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      animation: slideIn 0.3s ease-out;
+      cursor: pointer;
+      max-width: 320px;
+    }
+    .idle-toast .toast-title {
+      font-weight: 600;
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+    .idle-toast .toast-body {
+      font-size: 12px;
+      color: #999;
+    }
+    @keyframes slideIn {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+
     .add-launcher-form {
       display: none;
       background: #0f1629;
@@ -644,6 +729,30 @@
           <input type="text" id="launcherName" placeholder="Auto-filled from folder" />
         </div>
       </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Color</label>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            <input type="color" id="launcherColor" value="#44cc44" style="width: 36px; height: 30px; border: none; background: none; cursor: pointer; padding: 0;" />
+            <button type="button" onclick="document.getElementById('launcherColor').value='#44cc44'" style="width:24px;height:24px;border-radius:50%;border:2px solid #333;background:#44cc44;cursor:pointer;padding:0;" title="Green"></button>
+            <button type="button" onclick="document.getElementById('launcherColor').value='#3b82f6'" style="width:24px;height:24px;border-radius:50%;border:2px solid #333;background:#3b82f6;cursor:pointer;padding:0;" title="Blue"></button>
+            <button type="button" onclick="document.getElementById('launcherColor').value='#f59e0b'" style="width:24px;height:24px;border-radius:50%;border:2px solid #333;background:#f59e0b;cursor:pointer;padding:0;" title="Amber"></button>
+            <button type="button" onclick="document.getElementById('launcherColor').value='#ef4444'" style="width:24px;height:24px;border-radius:50%;border:2px solid #333;background:#ef4444;cursor:pointer;padding:0;" title="Red"></button>
+            <button type="button" onclick="document.getElementById('launcherColor').value='#a855f7'" style="width:24px;height:24px;border-radius:50%;border:2px solid #333;background:#a855f7;cursor:pointer;padding:0;" title="Purple"></button>
+            <button type="button" onclick="document.getElementById('launcherColor').value='#06b6d4'" style="width:24px;height:24px;border-radius:50%;border:2px solid #333;background:#06b6d4;cursor:pointer;padding:0;" title="Cyan"></button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Priority (1=highest, 5=lowest)</label>
+          <select id="launcherPriority" style="padding: 6px; background: #1a1a2e; color: #dde; border: 1px solid #333; border-radius: 4px;">
+            <option value="1">1 - Critical</option>
+            <option value="2">2 - High</option>
+            <option value="3" selected>3 - Normal</option>
+            <option value="4">4 - Low</option>
+            <option value="5">5 - Background</option>
+          </select>
+        </div>
+      </div>
       <div style="display: flex; gap: 8px;">
         <button class="primary" onclick="saveLauncher()">Save</button>
         <button class="danger" onclick="toggleAddLauncher()">Cancel</button>
@@ -652,6 +761,11 @@
 
     <div class="launcher-grid" id="launcherGrid">
       <div class="empty-state">No project launchers saved. Click "+ Quick Add" to add one.</div>
+    </div>
+
+    <div class="session-panel" id="sessionPanel" style="display:none;">
+      <h3>Active Sessions</h3>
+      <div id="sessionList"></div>
     </div>
   </div>
 
@@ -856,6 +970,16 @@
           <span class="slider-val" id="settDefaultUpVal">5 Mbps</span>
         </div>
         <p class="hint">Upload limit applied automatically when the app starts (set to 0 to disable)</p>
+        <div class="setting-row" style="margin-top: 8px;">
+          <label>Notification priority threshold</label>
+          <select id="settNotifyThreshold" onchange="saveNotifyThreshold()" style="padding: 4px 8px; background: #1a1a2e; color: #dde; border: 1px solid #333; border-radius: 4px; font-size: 12px;">
+            <option value="1">Critical only (1)</option>
+            <option value="2">High+ (1-2)</option>
+            <option value="3">Normal+ (1-3)</option>
+            <option value="5" selected>All (1-5)</option>
+          </select>
+          <span style="font-size: 10px; color: #666;">Only ding for sessions at or above this priority</span>
+        </div>
       </div>
     </div>
   </div>
@@ -1187,6 +1311,8 @@
         editingLauncherId = null;
         document.getElementById('launcherName').value = '';
         document.getElementById('launcherFolder').value = '';
+        document.getElementById('launcherColor').value = '#44cc44';
+        document.getElementById('launcherPriority').value = '3';
       }
     }
 
@@ -1206,11 +1332,13 @@
     async function saveLauncher() {
       const name = document.getElementById('launcherName').value.trim();
       const folder = document.getElementById('launcherFolder').value.trim();
+      const color = document.getElementById('launcherColor').value || '#44cc44';
+      const priority = parseInt(document.getElementById('launcherPriority').value) || 3;
       const claudeArgs = '--dangerously-skip-permissions';
 
       if (!name || !folder) { log('Name and folder are required', 'error'); return; }
 
-      const launcher = { name, folder, claudeArgs };
+      const launcher = { name, folder, claudeArgs, color, priority };
       if (editingLauncherId) launcher.id = editingLauncherId;
 
       await window.api.saveLauncher(launcher);
@@ -1249,6 +1377,7 @@
 
     async function refreshLaunchers() {
       const launchers = await window.api.getLaunchers();
+      const sessions = await window.api.getSessions();
       const grid = document.getElementById('launcherGrid');
 
       if (launchers.length === 0) {
@@ -1257,22 +1386,38 @@
         return;
       }
 
-      grid.innerHTML = launchers.map(l => `
-        <div class="launcher-card" ondblclick="launchClaude('${l.id}')">
+      grid.innerHTML = launchers.map(l => {
+        const color = l.color || '#44cc44';
+        const priority = l.priority || 3;
+        const session = sessions.find(s => s.launcherId === l.id);
+        const sessionClass = session ? (session.state === 'idle' ? 'session-idle' : 'session-active') : '';
+        const sessionBadge = session
+          ? `<span class="session-badge ${session.state}">${session.state === 'idle' ? 'IDLE' : 'RUNNING'}</span>`
+          : '';
+        const priorityStars = Array.from({length: 5}, (_, i) =>
+          `<span class="${i < (6 - priority) ? 'filled' : ''}">\u2605</span>`
+        ).join('');
+
+        return `<div class="launcher-card ${sessionClass}" ondblclick="launchClaude('${l.id}')" style="border-left: 3px solid ${color};">
           <div class="lc-actions">
             <button onclick="event.stopPropagation(); removeLauncher('${l.id}')">X</button>
           </div>
           <div style="display: flex; align-items: center; justify-content: space-between;">
             <div>
-              <div class="lc-name">${escHtml(l.name)}</div>
+              <div class="lc-name"><span class="lc-color-dot" style="background:${color}"></span>${escHtml(l.name)}</div>
               <div class="lc-folder">${escHtml(l.folder)}</div>
+              <div style="margin-top: 4px;">
+                <span class="priority-stars">${priorityStars}</span>
+                ${sessionBadge}
+              </div>
             </div>
-            <button onclick="event.stopPropagation(); launchClaude('${l.id}')" style="border: 1px solid #44cc44; background: none; color: #44cc44; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Launch</button>
+            <button onclick="event.stopPropagation(); launchClaude('${l.id}')" style="border: 1px solid ${color}; background: none; color: ${color}; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Launch</button>
           </div>
-        </div>
-      `).join('');
+        </div>`;
+      }).join('');
 
       updateLauncherSelects(launchers);
+      refreshSessionPanel(sessions);
     }
 
     function updateLauncherSelects(launchers) {
@@ -1283,6 +1428,115 @@
           launchers.map(l => `<option value="${l.id}">${escHtml(l.name)}</option>`).join('');
         if (current) sel.value = current;
       });
+    }
+
+    // --- Session Management ---
+    function refreshSessionPanel(sessions) {
+      const panel = document.getElementById('sessionPanel');
+      const list = document.getElementById('sessionList');
+
+      if (!sessions || sessions.length === 0) {
+        panel.style.display = 'none';
+        return;
+      }
+
+      panel.style.display = 'block';
+      list.innerHTML = sessions.map(s => {
+        const color = s.color || '#44cc44';
+        const elapsed = Math.round((Date.now() - new Date(s.startedAt).getTime()) / 60000);
+        const timeStr = elapsed < 1 ? 'just now' : elapsed < 60 ? `${elapsed}m` : `${Math.round(elapsed/60)}h ${elapsed%60}m`;
+        return `<div class="session-item">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="lc-color-dot" style="background:${color}"></span>
+            <span style="font-weight:600;color:#dde;">${escHtml(s.name)}</span>
+            <span class="session-badge ${s.state}">${s.state === 'idle' ? 'IDLE' : 'RUNNING'}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="color:#666;font-size:11px;">${timeStr}</span>
+            <button onclick="focusSession('${s.id}')" style="border:1px solid #555;background:none;color:#aaa;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:10px;">Focus</button>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    async function focusSession(id) {
+      await window.api.focusSession(id);
+    }
+
+    // Idle notification system
+    let idleToastTimeout = null;
+
+    function showIdleNotification(data) {
+      // Check priority threshold
+      const threshold = parseInt(localStorage.getItem('notifyThreshold') || '5');
+      if (data.priority > threshold) return;
+
+      // Remove existing toast
+      const existing = document.querySelector('.idle-toast');
+      if (existing) existing.remove();
+
+      const toast = document.createElement('div');
+      toast.className = 'idle-toast';
+      toast.innerHTML = `
+        <div class="toast-title" style="color:${data.color || '#eab308'};">
+          <span class="lc-color-dot" style="background:${data.color || '#eab308'}"></span>
+          ${escHtml(data.name)} is idle
+        </div>
+        <div class="toast-body">Claude has finished processing. Click to focus.</div>
+      `;
+      toast.onclick = () => {
+        focusSession(data.id);
+        toast.remove();
+      };
+      document.body.appendChild(toast);
+
+      // Play a ding sound
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.frequency.value = data.priority <= 2 ? 880 : 660; // Higher pitch for higher priority
+        gain.gain.value = 0.3;
+        osc.start();
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+        osc.stop(audioCtx.currentTime + 0.5);
+      } catch (e) {}
+
+      // Auto-dismiss after 8 seconds
+      if (idleToastTimeout) clearTimeout(idleToastTimeout);
+      idleToastTimeout = setTimeout(() => {
+        if (toast.parentNode) toast.remove();
+      }, 8000);
+    }
+
+    // Wire up session events
+    window.api.onSessionIdle((data) => {
+      showIdleNotification(data);
+      refreshLaunchers();
+    });
+
+    window.api.onSessionActive((data) => {
+      const toast = document.querySelector('.idle-toast');
+      if (toast) toast.remove();
+      refreshLaunchers();
+    });
+
+    window.api.onSessionEnded((data) => {
+      log(`Session ended: ${data.name}`, 'success');
+      refreshLaunchers();
+    });
+
+    // Poll session panel every 30 seconds to update elapsed time
+    setInterval(async () => {
+      const sessions = await window.api.getSessions();
+      if (sessions.length > 0) refreshSessionPanel(sessions);
+    }, 30000);
+
+    function saveNotifyThreshold() {
+      const val = document.getElementById('settNotifyThreshold').value;
+      localStorage.setItem('notifyThreshold', val);
     }
 
     // --- Prompt Backlog ---
@@ -1412,6 +1666,9 @@
       // Start bandwidth monitoring
       setInterval(updateBandwidth, 2000);
       updateBandwidth();
+
+      // Load notification threshold setting
+      document.getElementById('settNotifyThreshold').value = localStorage.getItem('notifyThreshold') || '5';
 
       log('Bandwidth Governor ready', 'success');
     })();

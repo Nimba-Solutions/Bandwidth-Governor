@@ -9,7 +9,7 @@ const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } = require('electr
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 
 const platform = process.platform; // 'win32', 'darwin', 'linux'
 
@@ -25,6 +25,7 @@ const store = new Store({
       defaultPreset: 'moderate',  // which preset to auto-apply
       defaultUploadMbps: 5,
       defaultDownloadMbps: 0,     // 0 = no download limit by default
+      notificationThreshold: 1,   // 1-5, only notify for priorities <= this value
     },
     enabled: true,  // master on/off
     launchers: [],  // { id, name, folder, claudeArgs }
@@ -37,6 +38,117 @@ const store = new Store({
 let mainWindow = null;
 let tray = null;
 let isEnabled = store.get('enabled', true);
+
+// --- Claude session tracking ---
+const activeSessions = new Map(); // id -> { pid, launcherId, name, folder, color, priority, state: 'active'|'idle', startedAt, lastActive, idleSeconds, cpuSnapshots }
+let sessionPollInterval = null;
+
+function startSessionPolling() {
+  if (sessionPollInterval) return;
+  sessionPollInterval = setInterval(pollSessions, 5000);
+}
+
+function stopSessionPolling() {
+  if (sessionPollInterval) {
+    clearInterval(sessionPollInterval);
+    sessionPollInterval = null;
+  }
+}
+
+function pollSessions() {
+  if (activeSessions.size === 0) {
+    stopSessionPolling();
+    return;
+  }
+
+  activeSessions.forEach((session, id) => {
+    if (platform === 'win32') {
+      exec(
+        `powershell -NoProfile -Command "Get-Process -Id ${session.pid} -ErrorAction SilentlyContinue | Select-Object CPU, WorkingSet64 | ConvertTo-Json"`,
+        (err, stdout) => {
+          if (err || !stdout || !stdout.trim()) {
+            // Process no longer exists
+            activeSessions.delete(id);
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('session-ended', { id, name: session.name });
+            }
+            if (activeSessions.size === 0) stopSessionPolling();
+            return;
+          }
+          try {
+            const info = JSON.parse(stdout.trim());
+            updateSessionActivity(id, session, info.CPU);
+          } catch (_) { /* ignore parse errors */ }
+        }
+      );
+    } else {
+      // macOS / Linux
+      exec(`ps -p ${session.pid} -o %cpu=`, (err, stdout) => {
+        if (err || !stdout || !stdout.trim()) {
+          activeSessions.delete(id);
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('session-ended', { id, name: session.name });
+          }
+          if (activeSessions.size === 0) stopSessionPolling();
+          return;
+        }
+        const cpu = parseFloat(stdout.trim()) || 0;
+        updateSessionActivity(id, session, cpu);
+      });
+    }
+  });
+}
+
+function updateSessionActivity(id, session, cpuValue) {
+  session.lastActive = Date.now();
+
+  // Track CPU snapshots (keep last 3 for idle detection)
+  if (!session.cpuSnapshots) session.cpuSnapshots = [];
+  session.cpuSnapshots.push(cpuValue);
+  if (session.cpuSnapshots.length > 3) session.cpuSnapshots.shift();
+
+  // Determine if idle: CPU < 1% for 3 consecutive polls (15 seconds)
+  const isCurrentlyIdle = session.cpuSnapshots.length >= 3 &&
+    session.cpuSnapshots.every(cpu => {
+      // On Windows, CPU is cumulative processor time — check delta
+      // On Unix, it's instantaneous percentage
+      if (platform === 'win32') {
+        return true; // handled via delta below
+      }
+      return cpu < 1;
+    });
+
+  // On Windows, CPU is cumulative — check if delta across snapshots is near zero
+  let windowsIdle = false;
+  if (platform === 'win32' && session.cpuSnapshots.length >= 3) {
+    const oldest = session.cpuSnapshots[0];
+    const newest = session.cpuSnapshots[session.cpuSnapshots.length - 1];
+    windowsIdle = (newest - oldest) < 1;
+  }
+
+  const idle = platform === 'win32' ? windowsIdle : isCurrentlyIdle;
+  const prevState = session.state;
+
+  if (idle && prevState === 'active') {
+    session.state = 'idle';
+    session.idleSeconds = 15;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('session-idle', {
+        id, name: session.name, color: session.color, priority: session.priority,
+      });
+    }
+  } else if (!idle && prevState === 'idle') {
+    session.state = 'active';
+    session.idleSeconds = 0;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('session-active', { id, name: session.name });
+    }
+  } else if (idle) {
+    session.idleSeconds = (session.idleSeconds || 0) + 5;
+  } else {
+    session.idleSeconds = 0;
+  }
+}
 
 // --- Icon ---
 
@@ -978,6 +1090,8 @@ ipcMain.handle('quick-setup', async (_, { uploadCapPercent }) => {
 ipcMain.handle('get-launchers', () => store.get('launchers', []));
 
 ipcMain.handle('save-launcher', (_, launcher) => {
+  if (!launcher.color) launcher.color = '#44cc44';
+  if (launcher.priority == null) launcher.priority = 3;
   const launchers = store.get('launchers', []);
   if (!launcher.id) {
     launcher.id = `launch_${Date.now()}`;
@@ -1003,46 +1117,74 @@ ipcMain.handle('launch-claude', (_, { id, promptText }) => {
   if (!launcher) return { status: 'error', message: 'Launcher not found' };
 
   const args = launcher.claudeArgs || '--dangerously-skip-permissions';
+  const color = launcher.color || '#44cc44';
+  const priority = launcher.priority != null ? launcher.priority : 3;
 
-  let cmd;
+  if (promptText) {
+    const { clipboard } = require('electron');
+    clipboard.writeText(promptText);
+  }
+
+  let child;
+  const sessionId = `session_${Date.now()}`;
+
   if (platform === 'win32') {
     const folder = launcher.folder.replace(/\//g, '\\');
-    if (promptText) {
-      // Copy prompt to clipboard and launch in new cmd window
-      cmd = `start cmd.exe /k "cd /d ${folder} && echo Prompt copied to clipboard. && claude ${args}"`;
-      const { clipboard } = require('electron');
-      clipboard.writeText(promptText);
-    } else {
-      cmd = `start cmd.exe /k "cd /d ${folder} && claude ${args}"`;
-    }
+    const shellCmd = promptText
+      ? `cd /d ${folder} && echo Prompt copied to clipboard. && claude ${args}`
+      : `cd /d ${folder} && claude ${args}`;
+    child = spawn('cmd.exe', ['/k', shellCmd], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: folder,
+    });
+    child.unref();
   } else if (platform === 'darwin') {
     // macOS: open a new Terminal.app window
     const folder = launcher.folder;
-    if (promptText) {
-      const { clipboard } = require('electron');
-      clipboard.writeText(promptText);
-    }
     const escapedFolder = folder.replace(/'/g, "'\\''");
     const termCmd = `cd '${escapedFolder}' && claude ${args}`;
-    cmd = `osascript -e 'tell application "Terminal" to do script "${termCmd.replace(/"/g, '\\"')}"'`;
+    const cmd = `osascript -e 'tell application "Terminal" to do script "${termCmd.replace(/"/g, '\\"')}"'`;
+    child = exec(cmd, { shell: '/bin/bash' }, (err) => {
+      if (err) console.error('Launch error:', err.message);
+    });
   } else {
     // Linux: try common terminal emulators
     const folder = launcher.folder;
-    if (promptText) {
-      const { clipboard } = require('electron');
-      clipboard.writeText(promptText);
-    }
     const escapedFolder = folder.replace(/'/g, "'\\''");
     const innerCmd = `cd '${escapedFolder}' && claude ${args}`;
-    // Try xdg-terminal-exec (modern), then common terminals
-    cmd = `x-terminal-emulator -e bash -c '${innerCmd.replace(/'/g, "'\\''")}; exec bash' 2>/dev/null || xterm -e bash -c '${innerCmd.replace(/'/g, "'\\''")}; exec bash' 2>/dev/null`;
+    const cmd = `x-terminal-emulator -e bash -c '${innerCmd.replace(/'/g, "'\\''")}; exec bash' 2>/dev/null || xterm -e bash -c '${innerCmd.replace(/'/g, "'\\''")}; exec bash' 2>/dev/null`;
+    child = exec(cmd, { shell: '/bin/bash' }, (err) => {
+      if (err) console.error('Launch error:', err.message);
+    });
   }
 
-  exec(cmd, { windowsHide: false, shell: platform === 'win32' ? true : '/bin/bash' }, (err) => {
-    if (err) console.error('Launch error:', err.message);
-  });
+  const pid = child ? child.pid : null;
+  const sessionInfo = {
+    pid,
+    launcherId: id,
+    name: launcher.name || launcher.folder,
+    folder: launcher.folder,
+    color,
+    priority,
+    state: 'active',
+    startedAt: new Date().toISOString(),
+    lastActive: Date.now(),
+    idleSeconds: 0,
+    cpuSnapshots: [],
+  };
 
-  return { status: 'ok', folder: launcher.folder };
+  if (pid) {
+    activeSessions.set(sessionId, sessionInfo);
+    startSessionPolling();
+  }
+
+  return {
+    status: 'ok',
+    folder: launcher.folder,
+    sessionId,
+    session: { id: sessionId, ...sessionInfo },
+  };
 });
 
 ipcMain.handle('browse-folder', async () => {
@@ -1053,6 +1195,27 @@ ipcMain.handle('browse-folder', async () => {
   });
   if (result.canceled) return null;
   return result.filePaths[0];
+});
+
+// --- Session IPC handlers ---
+
+ipcMain.handle('get-sessions', () => {
+  const sessions = [];
+  activeSessions.forEach((s, id) => sessions.push({ id, ...s }));
+  return sessions;
+});
+
+ipcMain.handle('focus-session', (_, id) => {
+  const session = activeSessions.get(id);
+  if (!session) return { status: 'error', message: 'Session not found' };
+  // Best-effort: bring the terminal window to front (platform specific)
+  if (platform === 'win32' && session.pid) {
+    exec(
+      `powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate((Get-Process -Id ${session.pid} -ErrorAction SilentlyContinue).MainWindowTitle)"`,
+      () => { /* best-effort, ignore errors */ }
+    );
+  }
+  return { status: 'ok' };
 });
 
 // --- Prompt Backlog ---

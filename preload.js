@@ -36,6 +36,13 @@ contextBridge.exposeInMainWorld('api', {
   launchClaude: (id, promptText) => ipcRenderer.invoke('launch-claude', { id, promptText }),
   browseFolder: () => ipcRenderer.invoke('browse-folder'),
 
+  // Sessions
+  getSessions: () => ipcRenderer.invoke('get-sessions'),
+  focusSession: (id) => ipcRenderer.invoke('focus-session', id),
+  onSessionIdle: (cb) => ipcRenderer.on('session-idle', (_, data) => cb(data)),
+  onSessionActive: (cb) => ipcRenderer.on('session-active', (_, data) => cb(data)),
+  onSessionEnded: (cb) => ipcRenderer.on('session-ended', (_, data) => cb(data)),
+
   // Prompts
   getPrompts: () => ipcRenderer.invoke('get-prompts'),
   savePrompt: (p) => ipcRenderer.invoke('save-prompt', p),
