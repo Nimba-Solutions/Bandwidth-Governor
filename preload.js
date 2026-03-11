@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('api', {
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (s) => ipcRenderer.invoke('save-settings', s),
   setAutoStart: (v) => ipcRenderer.invoke('set-auto-start', v),
+  getPlatform: () => ipcRenderer.invoke('get-platform'),
   applyPreset: (preset) => ipcRenderer.invoke('apply-preset', { preset }),
   quickLimitApp: (appName, uploadMbps) => ipcRenderer.invoke('quick-limit-app', { appName, uploadMbps }),
   selfElevate: () => ipcRenderer.invoke('self-elevate'),
