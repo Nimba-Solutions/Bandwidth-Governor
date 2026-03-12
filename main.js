@@ -45,7 +45,7 @@ let sessionPollInterval = null;
 
 function startSessionPolling() {
   if (sessionPollInterval) return;
-  sessionPollInterval = setInterval(pollSessions, 5000);
+  sessionPollInterval = setInterval(pollSessions, 10000);
 }
 
 function stopSessionPolling() {
@@ -62,12 +62,18 @@ function pollSessions() {
   }
 
   activeSessions.forEach((session, id) => {
+    const pid = parseInt(session.pid);
+    if (!pid || pid <= 0) {
+      activeSessions.delete(id);
+      return;
+    }
     if (platform === 'win32') {
+      // Use lightweight wmic instead of PowerShell to avoid CPU spike
       exec(
-        `powershell -NoProfile -Command "Get-Process -Id ${session.pid} -ErrorAction SilentlyContinue | Select-Object CPU, WorkingSet64 | ConvertTo-Json"`,
+        `wmic process where ProcessId=${pid} get KernelModeTime,UserModeTime /format:csv 2>NUL`,
+        { windowsHide: true, timeout: 5000 },
         (err, stdout) => {
-          if (err || !stdout || !stdout.trim()) {
-            // Process no longer exists
+          if (err || !stdout || !stdout.includes(',')) {
             activeSessions.delete(id);
             if (mainWindow && !mainWindow.isDestroyed()) {
               mainWindow.webContents.send('session-ended', { id, name: session.name });
@@ -75,10 +81,21 @@ function pollSessions() {
             if (activeSessions.size === 0) stopSessionPolling();
             return;
           }
-          try {
-            const info = JSON.parse(stdout.trim());
-            updateSessionActivity(id, session, info.CPU);
-          } catch (_) { /* ignore parse errors */ }
+          // Parse CSV: Node,KernelModeTime,UserModeTime
+          const lines = stdout.trim().split('\n').filter(l => l.trim() && !l.startsWith('Node'));
+          if (lines.length === 0) {
+            activeSessions.delete(id);
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('session-ended', { id, name: session.name });
+            }
+            if (activeSessions.size === 0) stopSessionPolling();
+            return;
+          }
+          const parts = lines[0].trim().split(',');
+          const kernel = parseInt(parts[1]) || 0;
+          const user = parseInt(parts[2]) || 0;
+          const totalCpu = kernel + user; // in 100-nanosecond units
+          updateSessionActivity(id, session, totalCpu);
         }
       );
     } else {
