@@ -69,12 +69,12 @@ function pollSessions() {
       return;
     }
     if (platform === 'win32') {
-      // Use lightweight wmic instead of PowerShell to avoid CPU spike
+      // Use tasklist to check if process is still running (no wmic — it hammers WmiPrvSE)
       guard.exec(
-        `wmic process where ProcessId=${pid} get KernelModeTime,UserModeTime /format:csv 2>NUL`,
+        `tasklist /fi "PID eq ${pid}" /nh 2>NUL`,
         { windowsHide: true, timeout: 5000 },
         (err, stdout) => {
-          if (err || !stdout || !stdout.includes(',')) {
+          if (err || !stdout || !stdout.includes(`${pid}`)) {
             activeSessions.delete(id);
             if (mainWindow && !mainWindow.isDestroyed()) {
               mainWindow.webContents.send('session-ended', { id, name: session.name });
@@ -82,21 +82,8 @@ function pollSessions() {
             if (activeSessions.size === 0) stopSessionPolling();
             return;
           }
-          // Parse CSV: Node,KernelModeTime,UserModeTime
-          const lines = stdout.trim().split('\n').filter(l => l.trim() && !l.startsWith('Node'));
-          if (lines.length === 0) {
-            activeSessions.delete(id);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('session-ended', { id, name: session.name });
-            }
-            if (activeSessions.size === 0) stopSessionPolling();
-            return;
-          }
-          const parts = lines[0].trim().split(',');
-          const kernel = parseInt(parts[1]) || 0;
-          const user = parseInt(parts[2]) || 0;
-          const totalCpu = kernel + user; // in 100-nanosecond units
-          updateSessionActivity(id, session, totalCpu);
+          // Process is alive — pass 1 as a heartbeat value for activity tracking
+          updateSessionActivity(id, session, 1);
         }
       );
     } else {
@@ -126,25 +113,9 @@ function updateSessionActivity(id, session, cpuValue) {
   if (session.cpuSnapshots.length > 3) session.cpuSnapshots.shift();
 
   // Determine if idle: CPU < 1% for 3 consecutive polls (15 seconds)
-  const isCurrentlyIdle = session.cpuSnapshots.length >= 3 &&
-    session.cpuSnapshots.every(cpu => {
-      // On Windows, CPU is cumulative processor time — check delta
-      // On Unix, it's instantaneous percentage
-      if (platform === 'win32') {
-        return true; // handled via delta below
-      }
-      return cpu < 1;
-    });
-
-  // On Windows, CPU is cumulative — check if delta across snapshots is near zero
-  let windowsIdle = false;
-  if (platform === 'win32' && session.cpuSnapshots.length >= 3) {
-    const oldest = session.cpuSnapshots[0];
-    const newest = session.cpuSnapshots[session.cpuSnapshots.length - 1];
-    windowsIdle = (newest - oldest) < 1;
-  }
-
-  const idle = platform === 'win32' ? windowsIdle : isCurrentlyIdle;
+  // On Windows, we only check process liveness (no per-process CPU), so never mark idle
+  const idle = platform !== 'win32' && session.cpuSnapshots.length >= 3 &&
+    session.cpuSnapshots.every(cpu => cpu < 1);
   const prevState = session.state;
 
   if (idle && prevState === 'active') {
