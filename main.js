@@ -10,6 +10,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { exec, spawn } = require('child_process');
+const guard = require('./process-guard');
 
 const platform = process.platform; // 'win32', 'darwin', 'linux'
 
@@ -69,7 +70,7 @@ function pollSessions() {
     }
     if (platform === 'win32') {
       // Use lightweight wmic instead of PowerShell to avoid CPU spike
-      exec(
+      guard.exec(
         `wmic process where ProcessId=${pid} get KernelModeTime,UserModeTime /format:csv 2>NUL`,
         { windowsHide: true, timeout: 5000 },
         (err, stdout) => {
@@ -100,7 +101,7 @@ function pollSessions() {
       );
     } else {
       // macOS / Linux
-      exec(`ps -p ${session.pid} -o %cpu=`, (err, stdout) => {
+      guard.exec(`ps -p ${session.pid} -o %cpu=`, (err, stdout) => {
         if (err || !stdout || !stdout.trim()) {
           activeSessions.delete(id);
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -264,25 +265,15 @@ function createTray() {
  * Run a PowerShell command (Windows only).
  */
 function runPowerShell(command) {
-  return new Promise((resolve, reject) => {
-    const psCmd = `powershell -NoProfile -ExecutionPolicy Bypass -Command "${command.replace(/"/g, '\\"')}"`;
-    exec(psCmd, { windowsHide: true }, (err, stdout, stderr) => {
-      if (err) reject(new Error(stderr || err.message));
-      else resolve(stdout.trim());
-    });
-  });
+  const psCmd = `powershell -NoProfile -ExecutionPolicy Bypass -Command "${command.replace(/"/g, '\\"')}"`;
+  return guard.execPromise(psCmd).then(s => (s || '').trim());
 }
 
 /**
  * Run a shell command via bash (macOS/Linux).
  */
 function runShell(command) {
-  return new Promise((resolve, reject) => {
-    exec(command, { shell: '/bin/bash' }, (err, stdout, stderr) => {
-      if (err) reject(new Error(stderr || err.message));
-      else resolve(stdout.trim());
-    });
-  });
+  return guard.execPromise(command).then(s => (s || '').trim());
 }
 
 // --- Linux helper: get default network interface ---
@@ -900,7 +891,7 @@ async function runSpeedTest(progressCallback) {
   try {
     const dlResult = await new Promise((resolve, reject) => {
       const testSize = 10000000; // 10MB
-      exec(
+      guard.exec(
         `curl -s -o ${nullDev} -w "%{speed_download}" "https://speed.cloudflare.com/__down?bytes=${testSize}"`,
         hideOpts,
         (err, stdout) => {
@@ -922,7 +913,7 @@ async function runSpeedTest(progressCallback) {
       const tempFile = path.join(app.getPath('temp'), 'bg-speedtest.bin');
       fs.writeFileSync(tempFile, Buffer.alloc(2000000, 0x41)); // 2MB of data
 
-      exec(
+      guard.exec(
         `curl -s -w "%{speed_upload}" -X POST -F "file=@${tempFile.replace(/\\/g, '/')}" "https://speed.cloudflare.com/__up" -o ${nullDev}`,
         hideOpts,
         (err, stdout) => {
@@ -1162,7 +1153,7 @@ ipcMain.handle('launch-claude', (_, { id, promptText }) => {
     const escapedFolder = folder.replace(/'/g, "'\\''");
     const termCmd = `cd '${escapedFolder}' && claude ${args}`;
     const cmd = `osascript -e 'tell application "Terminal" to do script "${termCmd.replace(/"/g, '\\"')}"'`;
-    child = exec(cmd, { shell: '/bin/bash' }, (err) => {
+    child = guard.exec(cmd, { shell: '/bin/bash' }, (err) => {
       if (err) console.error('Launch error:', err.message);
     });
   } else {
@@ -1171,7 +1162,7 @@ ipcMain.handle('launch-claude', (_, { id, promptText }) => {
     const escapedFolder = folder.replace(/'/g, "'\\''");
     const innerCmd = `cd '${escapedFolder}' && claude ${args}`;
     const cmd = `x-terminal-emulator -e bash -c '${innerCmd.replace(/'/g, "'\\''")}; exec bash' 2>/dev/null || xterm -e bash -c '${innerCmd.replace(/'/g, "'\\''")}; exec bash' 2>/dev/null`;
-    child = exec(cmd, { shell: '/bin/bash' }, (err) => {
+    child = guard.exec(cmd, { shell: '/bin/bash' }, (err) => {
       if (err) console.error('Launch error:', err.message);
     });
   }
@@ -1227,7 +1218,7 @@ ipcMain.handle('focus-session', (_, id) => {
   if (!session) return { status: 'error', message: 'Session not found' };
   // Best-effort: bring the terminal window to front (platform specific)
   if (platform === 'win32' && session.pid) {
-    exec(
+    guard.exec(
       `powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate((Get-Process -Id ${session.pid} -ErrorAction SilentlyContinue).MainWindowTitle)"`,
       () => { /* best-effort, ignore errors */ }
     );
@@ -1352,6 +1343,7 @@ if (!gotLock) {
 
 if (gotLock) {
   app.whenReady().then(async () => {
+    guard.init(app);
     createTray();
 
     const settings = store.get('settings');
